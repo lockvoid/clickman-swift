@@ -1,0 +1,30 @@
+target/
+node_modules/
+.build/
+.swiftpm/
+.gradle/
+.kotlin/
+**/build/
+local.properties
+.env
+.env.*
+!.env.example
+*.sqlite*
+.DS_Store
+tmp/
+
+# Local configuration and credentials.
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# Runtime databases and logs.
+*.db
+*.log
+
+# Editor and operating-system files.
+.idea/
+*.iml
