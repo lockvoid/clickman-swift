@@ -41,9 +41,9 @@ actor Sender {
     private var pace = Pace.open
     private var drains: Task<Void, Never>?
 
-    init(queue: Queue, configuration: ClickMan.Configuration, clock: @escaping @Sendable () -> Date, logger: Logger) {
+    init(queue: Queue, configuration: ClickMan.Configuration, clock: @escaping @Sendable () -> Date, logger: Logger) throws {
         self.queue = queue
-        self.request = Self.request(endpoint: configuration.endpoint, writeKey: configuration.writeKey)
+        self.request = try configuration.request()
         self.session = configuration.session
         self.flushAt = configuration.flushAt
         self.flushInterval = configuration.flushInterval
@@ -77,10 +77,10 @@ actor Sender {
     /// The batch to send now: none while a retry waits, while nothing is due, or when nothing waits.
     private func dueBatch(_ scope: DrainScope) throws -> Batch? {
         let now = clock()
+        try queue.purge(createdBefore: now.addingTimeInterval(-Self.maxAge))
         guard mayAttempt(at: now), try isDue(scope, at: now) else {
             return nil
         }
-        try queue.purge(createdBefore: now.addingTimeInterval(-Self.maxAge))
         return Batch(taking: try queue.oldest(Batch.maxEvents))
     }
 
@@ -114,7 +114,7 @@ actor Sender {
 
     private func post(_ request: URLRequest) async -> Answer {
         do {
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await session.data(for: request, delegate: RedirectPolicy.shared)
             guard let http = response as? HTTPURLResponse else {
                 return Answer(status: 0, retryAfter: nil, detail: "the answer was not HTTP")
             }
@@ -143,10 +143,10 @@ actor Sender {
     }
 
     private func backOff(after answer: Answer) {
-        let failures = failures + 1
+        let failures = min(failures, Int.max - 1) + 1
         let delay = RetryDelay.seconds(failures: failures, retryAfter: answer.retryAfter)
         pace = .backingOff(failures: failures, nextAttemptAt: clock().addingTimeInterval(delay))
-        logger.error("ClickMan will retry a batch in \(Int(delay.rounded(.up)))s, the answer was \(answer.status): \(answer.detail, privacy: .public)")
+        logger.error("ClickMan will retry a batch in \(delay.rounded(.up))s, the answer was \(answer.status): \(answer.detail, privacy: .public)")
     }
 
     private var failures: Int {
@@ -156,12 +156,14 @@ actor Sender {
         }
     }
 
-    private static func request(endpoint: URL, writeKey: String) -> URLRequest {
-        var request = URLRequest(url: endpoint.appending(path: "v1/batch"))
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(writeKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("gzip", forHTTPHeaderField: "Content-Encoding")
-        return request
+}
+
+/// A redirect remains a retry response; it cannot forward an event or source key to another URL.
+private final class RedirectPolicy: NSObject, URLSessionTaskDelegate {
+    static let shared = RedirectPolicy()
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest) async -> URLRequest? {
+        nil
     }
 }

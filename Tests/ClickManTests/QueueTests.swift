@@ -53,6 +53,12 @@ final class QueueTests: StoreTestCase {
         }
     }
 
+    func testANegativeStoreFormatIsRefusedWithoutRewritingIt() throws {
+        try writeStore(format: -1)
+        XCTAssertThrowsError(try Queue(path: storage, maxQueue: 10))
+        XCTAssertEqual(try inspect { try Int.fetchOne($0, sql: "PRAGMA user_version") }, -1)
+    }
+
     func testTheQueueKeepsTheNewestEventsUpToItsLimit() throws {
         let queue = try Queue(path: storage, maxQueue: 3)
         try append((1...5).map { #"{"n":\#($0)}"# }, to: queue)

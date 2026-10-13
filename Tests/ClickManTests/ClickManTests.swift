@@ -4,6 +4,24 @@ import XCTest
 @testable import ClickMan
 
 final class ClickManTests: StoreTestCase {
+    func testInvalidConfigurationIsRejectedBeforeCreatingAQueue() throws {
+        let changes: [(inout ClickMan.Configuration) -> Void] = [
+            { $0.maxQueue = 0 }, { $0.flushAt = 0 }, { $0.flushInterval = .zero },
+            { $0.pollInterval = .zero }, { $0.pollInterval = .nanoseconds(1) },
+            { $0.endpoint = URL(string: "file:///tmp/ingest")! },
+            { $0.endpoint = URL(string: "https://user:password@ingest.test")! },
+            { $0.endpoint = URL(string: "https://ingest.test?other=1")! },
+            { $0.endpoint = URL(string: "https://ingest.test#other")! },
+            { $0.writeKey = "" }, { $0.writeKey = "key\nother" }, { $0.writeKey = "non-ascii-é" },
+            { $0.storage = URL(string: "https://ingest.test\(self.storage.path)")! },
+        ]
+        for change in changes {
+            var configuration = ClickMan.Configuration.test(storage: storage)
+            change(&configuration)
+            XCTAssertThrowsError(try ClickMan(configuration: configuration))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: storage.path), "invalid configuration created a queue")
+        }
+    }
     private func makeClickMan(tracksLifecycle: Bool = false, bundle: Bundle = .main, maxQueue: Int = 10_000) throws -> ClickMan {
         var configuration = ClickMan.Configuration.test(storage: storage)
         configuration.tracksLifecycle = tracksLifecycle
@@ -85,6 +103,17 @@ final class ClickManTests: StoreTestCase {
         await clickMan.flush()
 
         XCTAssertEqual(try StubServer.events().map { $0["context"]?["traits"] }, [.object(["plan": .string("pro")]), nil, nil])
+    }
+
+    func testUnsignedIntegerTraitsKeepTheirExactValueAfterRestart() async throws {
+        do {
+            let clickMan = try makeClickMan()
+            clickMan.setTraits(["seats": UInt64.max])
+        }
+        let reopened = try makeClickMan()
+        reopened.track("after-restart")
+        await reopened.flush()
+        XCTAssertEqual(try StubServer.events().first?["context"]?["traits"]?["seats"], .unsigned(UInt64.max))
     }
 
     func testIdentifyAndResetSetTheActorOfLaterEvents() async throws {

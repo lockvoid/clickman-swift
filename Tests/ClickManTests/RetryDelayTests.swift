@@ -3,6 +3,11 @@ import XCTest
 @testable import ClickMan
 
 final class RetryDelayTests: XCTestCase {
+    func testHugeRetryAfterRemainsFinite() throws {
+        let delay = try XCTUnwrap(RetryDelay.retryAfter(String(repeating: "9", count: 400)))
+        XCTAssertTrue(delay.isFinite)
+        XCTAssertGreaterThan(delay, 600)
+    }
     func testRetryAfterIsReadInSeconds() {
         XCTAssertEqual(RetryDelay.retryAfter("30"), 30)
         XCTAssertEqual(RetryDelay.retryAfter(" 7 "), 7)

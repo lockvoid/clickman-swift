@@ -16,6 +16,7 @@ final class StubServer: URLProtocol, @unchecked Sendable {
     private struct State {
         var status = 202
         var retryAfter: String?
+        var redirectTo: URL?
         var delay: TimeInterval = 0
         var requests: [Request] = []
         var inFlight = 0
@@ -25,8 +26,8 @@ final class StubServer: URLProtocol, @unchecked Sendable {
     private static let state = OSAllocatedUnfairLock(initialState: State())
 
     /// Forgets what was sent; every request from now on is answered with `status` after `delay`.
-    static func reset(status: Int = 202, retryAfter: String? = nil, delay: TimeInterval = 0) {
-        state.withLock { $0 = State(status: status, retryAfter: retryAfter, delay: delay) }
+    static func reset(status: Int = 202, retryAfter: String? = nil, delay: TimeInterval = 0, redirectTo: URL? = nil) {
+        state.withLock { $0 = State(status: status, retryAfter: retryAfter, redirectTo: redirectTo, delay: delay) }
     }
 
     /// Answers later requests with `status`, keeping what was sent.
@@ -91,6 +92,9 @@ final class StubServer: URLProtocol, @unchecked Sendable {
         var headers = ["Content-Type": "application/json"]
         headers["Retry-After"] = retryAfter
         let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!
+        if let redirectTo = Self.state.withLock({ $0.redirectTo }), request.url != redirectTo {
+            client!.urlProtocol(self, wasRedirectedTo: URLRequest(url: redirectTo), redirectResponse: response)
+        }
         client!.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client!.urlProtocol(self, didLoad: Data(#"{"accepted":1,"duplicates":0,"rejected":[]}"#.utf8))
         client!.urlProtocolDidFinishLoading(self)
@@ -98,7 +102,7 @@ final class StubServer: URLProtocol, @unchecked Sendable {
 
     private static func record(_ request: URLRequest) -> (status: Int, retryAfter: String?, delay: TimeInterval) {
         let body = request.httpBody ?? request.httpBodyStream.map(read) ?? Data()
-        let recorded = Request(method: request.httpMethod!, url: request.url!, headers: request.allHTTPHeaderFields!, body: body)
+        let recorded = Request(method: request.httpMethod ?? "GET", url: request.url!, headers: request.allHTTPHeaderFields ?? [:], body: body)
         return state.withLock { state in
             state.requests.append(recorded)
             state.inFlight += 1

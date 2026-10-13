@@ -66,6 +66,9 @@ final class Queue: Sendable {
 
     private static func prepare(_ db: Database) throws {
         let format = try Int.fetchOne(db, sql: "PRAGMA user_version")!
+        guard format >= 0 else {
+            throw ClickManError.storage("The queue is format \(format), which no ClickMan writes")
+        }
         guard format <= QueueSchema.format else {
             throw ClickManError.storage("The queue was written by a newer ClickMan: format \(format), this one reads \(QueueSchema.format)")
         }

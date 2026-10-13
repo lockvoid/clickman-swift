@@ -5,6 +5,7 @@ import UIKit
 #endif
 
 public enum ClickManError: Error, Equatable {
+    case configuration(String)
     case storage(String)
 }
 
@@ -15,34 +16,6 @@ public enum ClickManError: Error, Equatable {
 /// network and never throws.
 public final class ClickMan: @unchecked Sendable {
     public static let version = "0.1.0"
-
-    public struct Configuration: Sendable {
-        /// The ingest server, e.g. `https://clickman.example.com`.
-        public var endpoint: URL
-        /// The write key of this app's source.
-        public var writeKey: String
-        /// A batch is sent once this many events are waiting.
-        public var flushAt = 20
-        /// A batch is sent once the oldest waiting event is this old.
-        public var flushInterval: Duration = .seconds(30)
-        /// The most events kept on the device; the oldest go first.
-        public var maxQueue = 10_000
-        /// Where the queue lives; Application Support/ClickMan by default.
-        public var storage: URL?
-        /// Sends `app_installed`, `app_updated`, `app_opened` and
-        /// `app_backgrounded` (docs/PROTOCOL.md).
-        public var tracksLifecycle = true
-
-        var session = URLSession(configuration: .ephemeral)
-        var bundle = Bundle.main
-        var pollInterval: Duration = .seconds(5)
-        var observesSystem = true
-
-        public init(endpoint: URL, writeKey: String) {
-            self.endpoint = endpoint
-            self.writeKey = writeKey
-        }
-    }
 
     static let logger = Logger(subsystem: "com.lockvoid.clickman", category: "ClickMan")
 
@@ -57,9 +30,10 @@ public final class ClickMan: @unchecked Sendable {
 
     /// Opens the queue and records the launch; throws when the queue cannot be opened.
     public init(configuration: Configuration) throws {
+        try configuration.validate()
         queue = try Queue(path: configuration.storage ?? Self.defaultStorage(), maxQueue: configuration.maxQueue)
         tracker = Tracker(queue: queue, bundle: configuration.bundle, clock: { Date() }, logger: Self.logger)
-        sender = Sender(queue: queue, configuration: configuration, clock: { Date() }, logger: Self.logger)
+        sender = try Sender(queue: queue, configuration: configuration, clock: { Date() }, logger: Self.logger)
         lifecycle = LifecycleTracking(tracker: tracker, tracksLifecycle: configuration.tracksLifecycle)
         if configuration.tracksLifecycle {
             tracker.recordLaunch(Launch(bundle: configuration.bundle))

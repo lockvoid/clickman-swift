@@ -18,6 +18,6 @@ enum RetryDelay {
         else {
             return nil
         }
-        return TimeInterval(text)
+        return TimeInterval(text).map { min($0, TimeInterval(Int64.max)) }
     }
 }

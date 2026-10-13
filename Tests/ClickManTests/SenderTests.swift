@@ -11,10 +11,10 @@ final class SenderTests: StoreTestCase {
         queue = try Queue(path: storage, maxQueue: 10_000)
     }
 
-    private func sender(flushAt: Int = 20) -> Sender {
+    private func sender(flushAt: Int = 20) throws -> Sender {
         var configuration = ClickMan.Configuration.test(storage: storage)
         configuration.flushAt = flushAt
-        return Sender(queue: queue, configuration: configuration, clock: clock.reading, logger: ClickMan.logger)
+        return try Sender(queue: queue, configuration: configuration, clock: clock.reading, logger: ClickMan.logger)
     }
 
     private func append(_ count: Int) throws {
@@ -26,9 +26,41 @@ final class SenderTests: StoreTestCase {
         }
     }
 
+    func testMountedAndEncodedEndpointPathsArePreserved() async throws {
+        for path in ["analytics", "analytics///", "space%20here"] {
+            StubServer.reset()
+            try append(1)
+            var configuration = ClickMan.Configuration.test(storage: storage)
+            configuration.endpoint = URL(string: "https://ingest.test/\(path)")!
+            let sender = try Sender(queue: queue, configuration: configuration, clock: clock.reading, logger: ClickMan.logger)
+            await sender.drain(.everything)
+            let prefix = path.hasPrefix("analytics") ? "analytics" : "space%20here"
+            XCTAssertEqual(StubServer.requests.first?.url.absoluteString, "https://ingest.test/\(prefix)/v1/batch")
+        }
+    }
+
+    func testARedirectIsRetriedWithoutForwardingAnEventToAnotherURL() async throws {
+        StubServer.reset(status: 307, redirectTo: URL(string: "https://other.test/receive")!)
+        try append(1)
+        try await sender().drain(.everything)
+        XCTAssertEqual(StubServer.requests.map(\.url.absoluteString), ["https://ingest.test/v1/batch"])
+        XCTAssertEqual(try queue.count(), 1)
+    }
+
+    func testALargeRetryAfterCanBeLoggedAndRetriedWithoutIntegerOverflow() async throws {
+        StubServer.reset(status: 429, retryAfter: String(Int64.max))
+        try append(1)
+        let sender = try sender()
+        await sender.drain(.everything)
+        clock.advance(by: 1)
+        await sender.drain(.everything)
+        XCTAssertEqual(StubServer.requests.count, 1)
+        XCTAssertEqual(try queue.count(), 1)
+    }
+
     func testABatchIsPostedGzippedWithTheWriteKeyAndTheBodiesVerbatim() async throws {
         try append(2)
-        await sender().drain(.everything)
+        try await sender().drain(.everything)
 
         let request = try XCTUnwrap(StubServer.requests.first)
         XCTAssertEqual(StubServer.requests.count, 1)
@@ -44,7 +76,7 @@ final class SenderTests: StoreTestCase {
     func testAFailedSendKeepsTheRowsAndNothingGoesBeforeTheBackoffEnds() async throws {
         StubServer.reset(status: 503)
         try append(2)
-        let sender = sender()
+        let sender = try sender()
 
         await sender.drain(.everything)
         await sender.drain(.everything)
@@ -61,7 +93,7 @@ final class SenderTests: StoreTestCase {
     func testNoAnswerIsARetry() async throws {
         StubServer.reset(status: 0)
         try append(1)
-        let sender = sender()
+        let sender = try sender()
 
         await sender.drain(.everything)
         await sender.drain(.everything)
@@ -72,7 +104,7 @@ final class SenderTests: StoreTestCase {
     func testALongerRetryAfterIsWaitedOut() async throws {
         StubServer.reset(status: 429, retryAfter: "30")
         try append(1)
-        let sender = sender()
+        let sender = try sender()
 
         await sender.drain(.everything)
         clock.advance(by: 29)
@@ -84,10 +116,21 @@ final class SenderTests: StoreTestCase {
         XCTAssertEqual(StubServer.requests.count, 2)
     }
 
+    func testExpiredEventsAreRemovedWhileRetryAfterIsStillWaiting() async throws {
+        StubServer.reset(status: 429, retryAfter: "5184000")
+        try append(1)
+        let sender = try sender()
+        await sender.drain(.everything)
+        clock.advance(by: Sender.maxAge + 1)
+        await sender.drain(.everything)
+        XCTAssertEqual(StubServer.requests.count, 1, "expiry must not bypass Retry-After")
+        XCTAssertEqual(try queue.count(), 0)
+    }
+
     func testTheBackoffDoublesAndADeliveryClearsIt() async throws {
         StubServer.reset(status: 500)
         try append(1)
-        let sender = sender()
+        let sender = try sender()
 
         await sender.drain(.everything)
         clock.advance(by: 6.001)
@@ -111,12 +154,12 @@ final class SenderTests: StoreTestCase {
         StubServer.reset(status: 400)
         try append(2)
 
-        await sender().drain(.everything)
+        try await sender().drain(.everything)
         XCTAssertEqual(try queue.count(), 0)
     }
 
     func testADueDrainWaitsForEnoughEventsOrForTheOldestToAge() async throws {
-        let sender = sender(flushAt: 3)
+        let sender = try sender(flushAt: 3)
         try append(2)
         await sender.drain(.due)
         XCTAssertEqual(StubServer.requests.count, 0)
@@ -140,7 +183,7 @@ final class SenderTests: StoreTestCase {
         let date = clock.now
         try queue.write { try $0.append(#"{"fresh":true}"#, createdAt: date) }
 
-        await sender().drain(.everything)
+        try await sender().drain(.everything)
         XCTAssertEqual(try StubServer.events(), [.object(["fresh": .bool(true)])])
         XCTAssertEqual(try queue.count(), 0)
     }
@@ -148,7 +191,7 @@ final class SenderTests: StoreTestCase {
     func testADrainSendsBatchesUntilNoneIsDue() async throws {
         try append(150)
 
-        await sender().drain(.everything)
+        try await sender().drain(.everything)
         XCTAssertEqual(try StubServer.batches().map { $0["batch"]?.array?.count }, [100, 50])
         XCTAssertEqual(try queue.count(), 0)
     }
@@ -157,7 +200,7 @@ final class SenderTests: StoreTestCase {
         StubServer.reset(status: 503)
         try append(150)
 
-        await sender().drain(.everything)
+        try await sender().drain(.everything)
         XCTAssertEqual(StubServer.requests.count, 1)
         XCTAssertEqual(try queue.count(), 150)
     }
@@ -165,7 +208,7 @@ final class SenderTests: StoreTestCase {
     func testOneBatchIsInFlightAtATime() async throws {
         StubServer.reset(delay: 0.2)
         try append(2)
-        let sender = sender()
+        let sender = try sender()
 
         async let first: Void = sender.drain(.everything)
         async let second: Void = sender.drain(.everything)

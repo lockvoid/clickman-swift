@@ -51,6 +51,8 @@ Sending runs in the background. By default, a batch becomes due after 20 queued
 events or 30 seconds. The client also attempts to flush when the network returns
 or the iOS app enters the background. You can request a send explicitly with
 `await analytics.flush()`; retry delays still apply.
+Flushes and scheduled sends remove events older than 30 days even while a longer
+retry delay is still waiting.
 
 ## Configuration and identity
 
@@ -73,6 +75,17 @@ changes the event limit. Call `reset()` after sign-out to clear identity and tra
 
 Use the server's base URL as `endpoint`: the client appends `/v1/batch`. For a
 server mounted at `/analytics`, use `https://example.com/analytics`.
+The endpoint must be an absolute HTTP(S) URL without credentials, query or
+fragment. Source keys must contain visible ASCII characters without whitespace.
+Configuration is checked before opening the queue; limits and intervals must be
+positive, and custom storage must be a file URL. Keep a separate queue file for
+each endpoint and source key. Redirect responses retain the batch for retry
+instead of forwarding events to another URL.
+
+Properties and traits reject cycles, non-finite numbers and nesting beyond 64
+levels. Failed conversions are logged and do not store an event or replace
+existing traits. Signed and unsigned 64-bit integer properties keep their exact
+values.
 
 ## Develop and test
 
